@@ -1,9 +1,6 @@
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.Scanner;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -11,20 +8,42 @@ import java.util.stream.Collectors;
  * @author gaoshuo
  * @date 2019-09-29
  */
-public class PrefixFilter {
-    private static final Object lock = new Object();
+class PrefixFilter {
+    private static final Object LOCK = new Object();
+
+    private static final String RANGE_ = "range";
+    private static final String PERM_ = "perm";
+    private static final Map<String, Integer> POSITION_HTTP_RANGE_MAP = new HashMap<>(){{
+       put("range*", 0);
+       put("perm*", 1);
+       put("range+", 2);
+       put("perm+", 3);
+       put("range=", 4);
+       put("perm=", 5);
+    }};
+
+    private static final Map<String, Integer> POSITION_HTTPS_RANGE_MAP = new HashMap<>(){{
+        put("range*", 6);
+        put("perm*", 7);
+        put("range+", 8);
+        put("perm+", 9);
+        put("range=", 10);
+        put("perm=", 11);
+    }};
+
+    private static final int POSITION_HTTP = 12;
+    private static final int POSITION_HTTPS = 13;
 
     /**
      * rules map
      */
-    private Map<String, String> httpMap = new ConcurrentHashMap<>();
-    private Map<String, String> httpsMap = new ConcurrentHashMap<>();
+    private Map<String, BitSet> rulesMap = new ConcurrentHashMap<>();
 
     /**
      * load domainRuleFile
      * @param filename filename
      */
-    public void loadFile(String filename) throws IOException {
+    void loadFile(String filename) throws IOException {
         try (var inputStream = new FileInputStream(filename)) {
             var sc = new Scanner(inputStream);
             while (sc.hasNextLine()) {
@@ -36,94 +55,112 @@ public class PrefixFilter {
                 var prefix = l.substring(0, i);
                 var range = l.charAt(i+1);
                 var perm = l.charAt(j+1);
-                String value = String.valueOf(range) + (perm == '+' ? 0 : 1);
+                var permValue = perm == '-';
+
                 if (prefix.startsWith("//")) {
-                    addRule(httpMap, "http:" + prefix, value);
-                    addRule(httpsMap, "https:" + prefix, value);
-                } else {
-                    if (prefix.startsWith("https")) {
-                        addRule(httpsMap, prefix, value);
-                    } else {
-                        addRule(httpMap, prefix, value);
-                    }
+                    addRule(rulesMap, prefix.substring(2), range, permValue, true, true);
+                } else if (prefix.startsWith("https")) {
+                    addRule(rulesMap, prefix.substring(8),range, permValue, false, true);
+                } else if (prefix.startsWith("http")) {
+                    addRule(rulesMap, prefix.substring(7),range, permValue, true, false);
                 }
             }
         }
     }
 
-    private void addRule(Map<String, String> map, String prefix, String value) {
-        if (map.containsKey(prefix)) {
-            String oldValue = map.get(prefix);
-            String newValue = getBestValue(Arrays.asList((oldValue + "," + value).split(","))).stream().collect(Collectors.joining(","));
-            map.put(prefix, newValue);
+    private void addRule(Map<String, BitSet> map, String prefix, char range, boolean perm, boolean http, boolean https) {
+        BitSet bitSet = rulesMap.get(prefix);
+        if (bitSet == null) {
+            bitSet = new BitSet();
+        }
+
+        if (http) {
+            bitSet.set(POSITION_HTTP, http);
+            setBitSet(bitSet, POSITION_HTTP_RANGE_MAP, range, perm);
+        }
+        if (https) {
+            bitSet.set(POSITION_HTTPS, https);
+            setBitSet(bitSet, POSITION_HTTPS_RANGE_MAP, range, perm);
+        }
+
+        map.put(prefix, bitSet);
+    }
+
+    private void setBitSet(BitSet bitSet, Map<String, Integer> rangeMap, char range, boolean perm) {
+        if (bitSet.get(rangeMap.get(RANGE_ + range))) {
+            // - > +
+            if (perm) {
+                bitSet.set(rangeMap.get(PERM_ + range), perm);
+            }
         } else {
-            map.put(prefix, value);
+            bitSet.set(rangeMap.get(RANGE_ + range), true);
+            bitSet.set(rangeMap.get(PERM_ + range), perm);
         }
     }
 
-    public int match(UrlFilter.Url u) {
+    int match(UrlFilter.Url u) {
         var url = u.url;
         boolean contain = false;
         var perm = -1;
 
-        while (!contain && url.length() > 1) {
-            Map<String, String> curMap;
-            if (url.startsWith("https")) {
-                curMap = httpsMap;
-            } else {
-                curMap = httpMap;
-            }
+        var isHttp = false;
+        var isHttps = false;
 
-            if (curMap.containsKey(url)) {
-                var values = curMap.get(url);
-                var valueList = values.split(",");
-                for (String value : valueList) {
-                    if (contain) {
-                        break;
+        if (url.startsWith("https")) {
+            url = url.substring(8);
+            isHttps = true;
+        } else if (url.startsWith("http")) {
+            url = url.substring(7);
+            isHttp = true;
+        }
+
+        var prefix = url;
+
+        while (!contain && prefix.length() > 1) {
+            if (rulesMap.containsKey(prefix)) {
+                var bitSet = rulesMap.get(prefix);
+                Map<String, Integer> rangeMap = POSITION_HTTP_RANGE_MAP ;
+
+                if (isHttp) {
+                    if (!bitSet.get(POSITION_HTTP)) {
+                        prefix = prefix.substring(0, prefix.length() -1);
+                        continue;
                     }
-                    var range = value.substring(0, 1);
-                    if ("=".equals(range)) {
-                        if (url.equals(u.url)) {
-                            contain = true;
-                            perm = Integer.valueOf(value.substring(1));
-                        }
-                    } else if ("+".equals(range)) {
-                        if (u.url.length() > url.length()) {
-                            contain = true;
-                            perm = Integer.valueOf(value.substring(1));
-                        }
-                    } else if ("*".equals(range)) {
+                    rangeMap = POSITION_HTTP_RANGE_MAP;
+                }
+                if (isHttps) {
+                    if (!bitSet.get(POSITION_HTTPS)) {
+                        prefix = prefix.substring(0, prefix.length() -1);
+                        continue;
+                    }
+                    rangeMap = POSITION_HTTPS_RANGE_MAP;
+                }
+
+                // *
+                if (bitSet.get(rangeMap.get(RANGE_ + "*"))) {
+                    contain = true;
+                    perm = bitSet.get(rangeMap.get(PERM_ + "*")) ? 1 : 0;
+                }
+
+                // +
+                if (bitSet.get(rangeMap.get(RANGE_ + "+"))) {
+                    if (url.length() > prefix.length()) {
                         contain = true;
-                        perm = Integer.valueOf(value.substring(1));
+                        perm = bitSet.get(rangeMap.get(PERM_ + "+")) ? 1 : 0;
+                    }
+                }
+
+                // =
+                if (bitSet.get(rangeMap.get(RANGE_ + "="))) {
+                    if (prefix.equals(url)) {
+                        contain = true;
+                        perm = bitSet.get(rangeMap.get(PERM_ + "=")) ? 1 : 0;
                     }
                 }
             }
-            url = url.substring(0, url.length() -1);
+            prefix = prefix.substring(0, prefix.length() -1);
         }
 
         return perm;
-    }
-
-    private List<String> getBestValue(List<String> values) {
-        return values.stream().sorted((o1, o2) -> {
-            String range1 = o1.substring(0, 1);
-            String perm1 = o1.substring(1);
-            String range2 = o2.substring(0, 1);
-            String perm2 = o2.substring(1);
-
-            if (!range1.equals(range2)) {
-                if ("*".equals(range1)) {
-                    return 1;
-                } else if ("*".equals(range2)) {
-                    return -1;
-                }
-            }
-            if (perm1.equals(perm2)) {
-                return 1;
-            } else {
-                return "-".equals(perm1) ? -1 : 1;
-            }
-
-        }).collect(Collectors.toList());
     }
 }
