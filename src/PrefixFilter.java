@@ -2,6 +2,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -14,30 +15,39 @@ class PrefixFilter {
     private static final String RANGE_ = "range";
     private static final String PERM_ = "perm";
     private static final Map<String, Integer> POSITION_HTTP_RANGE_MAP = new HashMap<>(){{
-       put("range*", 0);
-       put("perm*", 1);
-       put("range+", 2);
-       put("perm+", 3);
-       put("range=", 4);
-       put("perm=", 5);
+       put("range*", 1);
+       put("perm*", 1 << 1);
+       put("range+", 1 << 2);
+       put("perm+", 1 << 3);
+       put("range=", 1 << 4);
+       put("perm=", 1 << 5);
     }};
 
     private static final Map<String, Integer> POSITION_HTTPS_RANGE_MAP = new HashMap<>(){{
-        put("range*", 6);
-        put("perm*", 7);
-        put("range+", 8);
-        put("perm+", 9);
-        put("range=", 10);
-        put("perm=", 11);
+        put("range*", 1 << 6);
+        put("perm*", 1 << 7);
+        put("range+", 1 << 8);
+        put("perm+", 1 << 9);
+        put("range=", 1 << 10);
+        put("perm=", 1 << 11);
     }};
 
-    private static final int POSITION_HTTP = 12;
-    private static final int POSITION_HTTPS = 13;
+    private static final int POSITION_HTTP = 1 << 12;
+    private static final int POSITION_HTTPS = 1 << 13;
 
     /**
      * rules map
      */
-    private Map<String, BitSet> rulesMap = new ConcurrentHashMap<>();
+//    private Map<String, BitSet> rulesMap = new ConcurrentHashMap<>();
+
+    private static final int MAP_NUM = 100;
+    private Map<String, Integer>[] maps = new Map[100];
+
+    private Bloom bloom = new Bloom();
+
+    private int minLength = Integer.MAX_VALUE;
+    private int maxLength = Integer.MIN_VALUE;
+
 
     /**
      * load domainRuleFile
@@ -58,44 +68,64 @@ class PrefixFilter {
                 var permValue = perm == '-';
 
                 if (prefix.startsWith("//")) {
-                    addRule(rulesMap, prefix.substring(2), range, permValue, true, true);
+                    addRule(prefix.substring(2), range, permValue, true, true);
                 } else if (prefix.startsWith("https")) {
-                    addRule(rulesMap, prefix.substring(8),range, permValue, false, true);
+                    addRule(prefix.substring(8),range, permValue, false, true);
                 } else if (prefix.startsWith("http")) {
-                    addRule(rulesMap, prefix.substring(7),range, permValue, true, false);
+                    addRule(prefix.substring(7),range, permValue, true, false);
                 }
             }
         }
     }
 
-    private void addRule(Map<String, BitSet> map, String prefix, char range, boolean perm, boolean http, boolean https) {
-        BitSet bitSet = rulesMap.get(prefix);
-        if (bitSet == null) {
-            bitSet = new BitSet();
+    private Map<String, Integer> getRulesMap(String url) {
+        int hash = url.length();
+        int position = Math.abs(hash % MAP_NUM);
+        if (maps[position] == null) {
+            maps[position] = new ConcurrentHashMap<>();
+        }
+        return maps[position];
+    }
+
+    private void addRule(String prefix, char range, boolean perm, boolean http, boolean https) {
+
+        if (prefix.length() > maxLength) {
+            maxLength = prefix.length();
+        }
+        if (prefix.length() < minLength) {
+            minLength = prefix.length();
+        }
+        Map<String, Integer> rulesMap = getRulesMap(prefix);
+        var bitInt = rulesMap.get(prefix);
+        if (bitInt == null) {
+            bitInt = 0;
         }
 
         if (http) {
-            bitSet.set(POSITION_HTTP, http);
-            setBitSet(bitSet, POSITION_HTTP_RANGE_MAP, range, perm);
+            bitInt |= POSITION_HTTP;
+            bitInt = setBitSet(bitInt, POSITION_HTTP_RANGE_MAP, range, perm);
         }
         if (https) {
-            bitSet.set(POSITION_HTTPS, https);
-            setBitSet(bitSet, POSITION_HTTPS_RANGE_MAP, range, perm);
+            bitInt |= POSITION_HTTPS;
+            bitInt = setBitSet(bitInt, POSITION_HTTPS_RANGE_MAP, range, perm);
         }
 
-        map.put(prefix, bitSet);
+        rulesMap.put(prefix, bitInt);
     }
 
-    private void setBitSet(BitSet bitSet, Map<String, Integer> rangeMap, char range, boolean perm) {
-        if (bitSet.get(rangeMap.get(RANGE_ + range))) {
+    private int setBitSet(int bitInt, Map<String, Integer> rangeMap, char range, boolean perm) {
+        if (check(bitInt, rangeMap.get(RANGE_ + range))) {
             // - > +
             if (perm) {
-                bitSet.set(rangeMap.get(PERM_ + range), perm);
+                bitInt |= rangeMap.get(PERM_ + range);
             }
         } else {
-            bitSet.set(rangeMap.get(RANGE_ + range), true);
-            bitSet.set(rangeMap.get(PERM_ + range), perm);
+            bitInt |= rangeMap.get(RANGE_ + range);
+            if (perm) {
+                bitInt |= rangeMap.get(PERM_ + range);
+            }
         }
+        return bitInt;
     }
 
     int match(UrlFilter.Url u) {
@@ -117,19 +147,27 @@ class PrefixFilter {
         var prefix = url;
 
         while (!contain && prefix.length() > 1) {
-            if (rulesMap.containsKey(prefix)) {
-                var bitSet = rulesMap.get(prefix);
+            if (prefix.length() > maxLength) {
+                prefix = prefix.substring(0, prefix.length() -1);
+                continue;
+            }
+            if (prefix.length() < minLength) {
+                break;
+            }
+            Map<String, Integer> rulesMap = getRulesMap(prefix);
+            var bitInt = rulesMap.get(prefix);
+            if (bitInt != null) {
                 Map<String, Integer> rangeMap = POSITION_HTTP_RANGE_MAP ;
 
                 if (isHttp) {
-                    if (!bitSet.get(POSITION_HTTP)) {
+                    if (!check(bitInt, POSITION_HTTP)) {
                         prefix = prefix.substring(0, prefix.length() -1);
                         continue;
                     }
                     rangeMap = POSITION_HTTP_RANGE_MAP;
                 }
                 if (isHttps) {
-                    if (!bitSet.get(POSITION_HTTPS)) {
+                    if (!check(bitInt, POSITION_HTTPS)) {
                         prefix = prefix.substring(0, prefix.length() -1);
                         continue;
                     }
@@ -137,24 +175,24 @@ class PrefixFilter {
                 }
 
                 // *
-                if (bitSet.get(rangeMap.get(RANGE_ + "*"))) {
+                if (check(bitInt, rangeMap.get(RANGE_ + "*"))) {
                     contain = true;
-                    perm = bitSet.get(rangeMap.get(PERM_ + "*")) ? 1 : 0;
+                    perm = check(bitInt, rangeMap.get(PERM_ + "*")) ? 1 : 0;
                 }
 
                 // +
-                if (bitSet.get(rangeMap.get(RANGE_ + "+"))) {
+                if (check(bitInt, rangeMap.get(RANGE_ + "+"))) {
                     if (url.length() > prefix.length()) {
                         contain = true;
-                        perm = bitSet.get(rangeMap.get(PERM_ + "+")) ? 1 : 0;
+                        perm = check(bitInt, rangeMap.get(PERM_ + "+")) ? 1 : 0;
                     }
                 }
 
                 // =
-                if (bitSet.get(rangeMap.get(RANGE_ + "="))) {
+                if (check(bitInt, rangeMap.get(RANGE_ + "="))) {
                     if (prefix.equals(url)) {
                         contain = true;
-                        perm = bitSet.get(rangeMap.get(PERM_ + "=")) ? 1 : 0;
+                        perm = check(bitInt, rangeMap.get(PERM_ + "=")) ? 1 : 0;
                     }
                 }
             }
@@ -162,5 +200,9 @@ class PrefixFilter {
         }
 
         return perm;
+    }
+
+    private boolean check(int value, int position){
+        return (value & position) == position;
     }
 }
