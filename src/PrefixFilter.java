@@ -1,16 +1,14 @@
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * @author gaoshuo
  * @date 2019-09-29
  */
-class PrefixFilter {
+class PrefixFilter implements Filter{
     private static final Object LOCK = new Object();
+
+    private Map<String, Integer> rulesMap = new HashMap<>();
 
     private static final String RANGE_ = "range";
     private static final String PERM_ = "perm";
@@ -35,60 +33,44 @@ class PrefixFilter {
     private static final int POSITION_HTTP = 1 << 12;
     private static final int POSITION_HTTPS = 1 << 13;
 
-    /**
-     * rules map
-     */
-//    private Map<String, BitSet> rulesMap = new ConcurrentHashMap<>();
-
     private static final int MAP_NUM = 100;
     private Map<String, Integer>[] maps = new Map[100];
 
-    private Bloom bloom = new Bloom();
+    private BloomFilter bloomFilter = new BloomFilter(8, 1000000);
 
     private int minLength = Integer.MAX_VALUE;
     private int maxLength = Integer.MIN_VALUE;
 
+    @Override
+    public void load(String l) {
+        if (l.isEmpty() || l.startsWith("#"))
+            return;
+        var i = l.indexOf('\t');
+        var j = l.indexOf('\t', i+1);
+        var prefix = l.substring(0, i);
+        var range = l.charAt(i+1);
+        var perm = l.charAt(j+1);
+        var permValue = perm == '-';
 
-    /**
-     * load domainRuleFile
-     * @param filename filename
-     */
-    void loadFile(String filename) throws IOException {
-        try (var inputStream = new FileInputStream(filename)) {
-            var sc = new Scanner(inputStream);
-            while (sc.hasNextLine()) {
-                String l = sc.nextLine();
-                if (l.isEmpty() || l.startsWith("#"))
-                    return;
-                var i = l.indexOf('\t');
-                var j = l.indexOf('\t', i+1);
-                var prefix = l.substring(0, i);
-                var range = l.charAt(i+1);
-                var perm = l.charAt(j+1);
-                var permValue = perm == '-';
-
-                if (prefix.startsWith("//")) {
-                    addRule(prefix.substring(2), range, permValue, true, true);
-                } else if (prefix.startsWith("https")) {
-                    addRule(prefix.substring(8),range, permValue, false, true);
-                } else if (prefix.startsWith("http")) {
-                    addRule(prefix.substring(7),range, permValue, true, false);
-                }
-            }
+        if (prefix.startsWith("//")) {
+            addRule(prefix.substring(2), range, permValue, true, true);
+        } else if (prefix.startsWith("https")) {
+            addRule(prefix.substring(8),range, permValue, false, true);
+        } else if (prefix.startsWith("http")) {
+            addRule(prefix.substring(7),range, permValue, true, false);
         }
     }
 
     private Map<String, Integer> getRulesMap(String url) {
-        int hash = url.length();
+        int hash = url.hashCode();
         int position = Math.abs(hash % MAP_NUM);
         if (maps[position] == null) {
-            maps[position] = new ConcurrentHashMap<>();
+            maps[position] = new HashMap<>();
         }
         return maps[position];
     }
 
     private void addRule(String prefix, char range, boolean perm, boolean http, boolean https) {
-
         if (prefix.length() > maxLength) {
             maxLength = prefix.length();
         }

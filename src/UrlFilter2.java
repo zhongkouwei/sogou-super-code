@@ -21,7 +21,7 @@ public class UrlFilter2 {
         ThreadPoolExecutor executor = new ThreadPoolExecutor(100,100, 0, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
         String curPath = System.getProperty("user.dir");
 
-        var domainFilter = new DomainTrieFilter();
+        var domainFilter = new DomainFilter();
         File domainFile = new File(args[0]);
         List<File> domainFileList = FileUtil.splitDataToSaveFile(100000, domainFile, curPath);
         for (File file : domainFileList) {

@@ -1,23 +1,17 @@
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Scanner;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * @author gaoshuo
  * @date 2019-09-29
  */
-public class DomainFilter {
+public class DomainFilter implements Filter {
     private static final Object LOCK = new Object();
 
     /**
      * rules map
      */
-//    private Map<String, BitSet> rulesMap = new ConcurrentHashMap<>();
+    private Map<String, Integer> rulesMap = new HashMap<>();
 
     private static final int POSITION_IS_URL = 1;
     private static final int POSITION_URL_PERM = 1 << 1;
@@ -27,36 +21,26 @@ public class DomainFilter {
     private static final int MAP_NUM = 100;
     private Map<String, Integer>[] maps = new Map[100];
 
-    private Bloom bloom = new Bloom();
+    private BloomFilter bloomFilter = new BloomFilter(8, 1000000);
 
-    /**
-     * load domainRuleFile
-     * @param filename filename
-     */
-    void loadFile(String filename) throws IOException {
-        try (var inputStream = new FileInputStream(filename)) {
-            var sc = new Scanner(inputStream);
-            while (sc.hasNextLine()) {
-                String l = sc.nextLine();
-                var i = l.indexOf('\t');
-                var url = l.substring(0, i);
-                var perm = l.charAt(i+1) == '-';
+    @Override
+    public void load(String l) {
+        var i = l.indexOf('\t');
+        var url = l.substring(0, i);
+        var perm = l.charAt(i+1) == '-';
 
-                if (url.startsWith(".")) {
-                    addRule(url.substring(1), POSITION_IS_POINT, POSITION_POINT_PERM, perm);
-                } else {
-                    addRule(url, POSITION_IS_URL, POSITION_URL_PERM, perm);
-                }
-
-            }
+        if (url.startsWith(".")) {
+            addRule(url.substring(1), POSITION_IS_POINT, POSITION_POINT_PERM, perm);
+        } else {
+            addRule(url, POSITION_IS_URL, POSITION_URL_PERM, perm);
         }
     }
 
     private Map<String, Integer> getRulesMap(String url) {
-        int hash = url.length();
+        int hash = url.hashCode();
         int position = Math.abs(hash % MAP_NUM);
         if (maps[position] == null) {
-            maps[position] = new ConcurrentHashMap<>();
+            maps[position] = new HashMap<>();
         }
         return maps[position];
     }
