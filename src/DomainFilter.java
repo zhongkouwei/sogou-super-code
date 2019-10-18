@@ -5,13 +5,8 @@ import java.util.Map;
  * @author gaoshuo
  * @date 2019-09-29
  */
-public class DomainFilter implements Filter {
+public class DomainFilter implements UrlFilter.Filter {
     private static final Object LOCK = new Object();
-
-    /**
-     * rules map
-     */
-    private Map<String, Integer> rulesMap = new HashMap<>();
 
     private static final int POSITION_IS_URL = 1;
     private static final int POSITION_URL_PERM = 1 << 1;
@@ -19,9 +14,8 @@ public class DomainFilter implements Filter {
     private static final int POSITION_POINT_PERM = 1 << 3;
 
     private static final int MAP_NUM = 100;
-    private Map<String, Integer>[] maps = new Map[100];
-
-    private BloomFilter bloomFilter = new BloomFilter(8, 1000000);
+    private Map<String, Integer>[] portMaps = new HashMap[MAP_NUM];
+    private Map<String, Integer>[] noPortmaps = new HashMap[MAP_NUM];
 
     @Override
     public void load(String l) {
@@ -36,17 +30,18 @@ public class DomainFilter implements Filter {
         }
     }
 
-    private Map<String, Integer> getRulesMap(String url) {
-        int hash = url.hashCode();
+    private Map<String, Integer> getRulesMap(String url, boolean withPort) {
+        int hash = url.length();
         int position = Math.abs(hash % MAP_NUM);
-        if (maps[position] == null) {
-            maps[position] = new HashMap<>();
+        Map<String, Integer>[] curMaps = withPort ? portMaps : noPortmaps;
+        if (curMaps[position] == null) {
+            curMaps[position] = new HashMap<>();
         }
-        return maps[position];
+        return curMaps[position];
     }
 
     private void addRule(String url, int isPosition, int permPosition, boolean perm) {
-        Map<String, Integer> rulesMap = getRulesMap(url);
+        Map<String, Integer> rulesMap = getRulesMap(url, url.contains(":"));
         var bitInt = rulesMap.get(url);
         if (bitInt == null) {
             bitInt =  0;
@@ -67,7 +62,7 @@ public class DomainFilter implements Filter {
         // first with port
         if (url.port != -1) {
             var domainPort = domain + ":" + url.port;
-            perm = checkUrl(domainPort);
+            perm = checkUrl(domainPort, true);
         }
 
         if (perm != -1) {
@@ -75,16 +70,16 @@ public class DomainFilter implements Filter {
         }
 
         // then without port
-        perm = checkUrl(domain);
+        perm = checkUrl(domain, false);
 
         return perm;
     }
 
-    private int checkUrl(String url) {
+    private int checkUrl(String url, boolean withPort) {
         var havaPoint = false;
         var perm = -1;
         while (true) {
-            Map<String, Integer> rulesMap = getRulesMap(url);
+            Map<String, Integer> rulesMap = getRulesMap(url, withPort);
             var bitInt = rulesMap.get(url);
             if (bitInt != null) {
                 if (havaPoint && (check(bitInt, POSITION_IS_POINT))) {

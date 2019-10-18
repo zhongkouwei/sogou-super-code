@@ -5,10 +5,8 @@ import java.util.Map;
  * @author gaoshuo
  * @date 2019-09-29
  */
-class PrefixFilter implements Filter{
+class PrefixFilter implements UrlFilter.Filter {
     private static final Object LOCK = new Object();
-
-    private Map<String, Integer> rulesMap = new HashMap<>();
 
     private static final String RANGE_ = "range";
     private static final String PERM_ = "perm";
@@ -32,11 +30,11 @@ class PrefixFilter implements Filter{
 
     private static final int POSITION_HTTP = 1 << 12;
     private static final int POSITION_HTTPS = 1 << 13;
+    private static final int POSITION_CONTINUE = 1 << 14;
 
     private static final int MAP_NUM = 100;
-    private Map<String, Integer>[] maps = new Map[100];
-
-    private BloomFilter bloomFilter = new BloomFilter(8, 1000000);
+    private Map<String, Integer>[] rootMaps = new Map[MAP_NUM];
+    private Map<String, Integer>[] notRootmaps = new Map[MAP_NUM];
 
     private int minLength = Integer.MAX_VALUE;
     private int maxLength = Integer.MIN_VALUE;
@@ -61,13 +59,15 @@ class PrefixFilter implements Filter{
         }
     }
 
-    private Map<String, Integer> getRulesMap(String url) {
-        int hash = url.hashCode();
+    private Map<String, Integer> getRulesMap(String url, boolean isRoot) {
+        int hash = url.length();
         int position = Math.abs(hash % MAP_NUM);
-        if (maps[position] == null) {
-            maps[position] = new HashMap<>();
+        Map<String, Integer>[] curMaps = isRoot ? rootMaps : notRootmaps;
+        if (curMaps[position] == null) {
+            curMaps[position] = new HashMap<>();
         }
-        return maps[position];
+
+        return curMaps[position];
     }
 
     private void addRule(String prefix, char range, boolean perm, boolean http, boolean https) {
@@ -77,7 +77,10 @@ class PrefixFilter implements Filter{
         if (prefix.length() < minLength) {
             minLength = prefix.length();
         }
-        Map<String, Integer> rulesMap = getRulesMap(prefix);
+
+        boolean isRoot = prefix.indexOf("/") == prefix.length() - 1 && prefix.endsWith("/");
+
+        Map<String, Integer> rulesMap = getRulesMap(prefix, isRoot);
         var bitInt = rulesMap.get(prefix);
         if (bitInt == null) {
             bitInt = 0;
@@ -93,6 +96,20 @@ class PrefixFilter implements Filter{
         }
 
         rulesMap.put(prefix, bitInt);
+
+        /*
+            when is not root, mark rootMap
+         */
+        if (!isRoot) {
+            var rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
+            rulesMap = getRulesMap(rootUrl, true);
+            bitInt = rulesMap.get(rootUrl);
+            if (bitInt == null) {
+                bitInt = 0;
+            }
+            bitInt |= POSITION_CONTINUE;
+            rulesMap.put(rootUrl, bitInt);
+        }
     }
 
     private int setBitSet(int bitInt, Map<String, Integer> rangeMap, char range, boolean perm) {
@@ -112,7 +129,6 @@ class PrefixFilter implements Filter{
 
     int match(UrlFilter.Url u) {
         var url = u.url;
-        boolean contain = false;
         var perm = -1;
 
         var isHttp = false;
@@ -128,59 +144,88 @@ class PrefixFilter implements Filter{
 
         var prefix = url;
 
-        while (!contain && prefix.length() > 1) {
-            if (prefix.length() > maxLength) {
-                prefix = prefix.substring(0, prefix.length() -1);
-                continue;
+//        /*
+//            first check rootUrl
+//         */
+        var chekedRoot = false;
+        var rootPerm = -1;
+        var rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
+        int rootLen = rootUrl.length();
+        Map<String, Integer> rulesMap = getRulesMap(rootUrl, true);
+        var bitInt = rulesMap.get(rootUrl);
+        if (bitInt != null) {
+            rootPerm = checkUrl(url, rootUrl, isHttp, isHttps, bitInt);
+            chekedRoot = true;
+            if (!check(bitInt, POSITION_CONTINUE)) {
+                return rootPerm;
             }
-            if (prefix.length() < minLength) {
-                break;
-            }
-            Map<String, Integer> rulesMap = getRulesMap(prefix);
-            var bitInt = rulesMap.get(prefix);
-            if (bitInt != null) {
-                Map<String, Integer> rangeMap = POSITION_HTTP_RANGE_MAP ;
-
-                if (isHttp) {
-                    if (!check(bitInt, POSITION_HTTP)) {
-                        prefix = prefix.substring(0, prefix.length() -1);
-                        continue;
-                    }
-                    rangeMap = POSITION_HTTP_RANGE_MAP;
-                }
-                if (isHttps) {
-                    if (!check(bitInt, POSITION_HTTPS)) {
-                        prefix = prefix.substring(0, prefix.length() -1);
-                        continue;
-                    }
-                    rangeMap = POSITION_HTTPS_RANGE_MAP;
-                }
-
-                // *
-                if (check(bitInt, rangeMap.get(RANGE_ + "*"))) {
-                    contain = true;
-                    perm = check(bitInt, rangeMap.get(PERM_ + "*")) ? 1 : 0;
-                }
-
-                // +
-                if (check(bitInt, rangeMap.get(RANGE_ + "+"))) {
-                    if (url.length() > prefix.length()) {
-                        contain = true;
-                        perm = check(bitInt, rangeMap.get(PERM_ + "+")) ? 1 : 0;
-                    }
-                }
-
-                // =
-                if (check(bitInt, rangeMap.get(RANGE_ + "="))) {
-                    if (prefix.equals(url)) {
-                        contain = true;
-                        perm = check(bitInt, rangeMap.get(PERM_ + "=")) ? 1 : 0;
-                    }
-                }
-            }
-            prefix = prefix.substring(0, prefix.length() -1);
         }
 
+        /*
+            then check path
+         */
+        int curLen = prefix.length();
+        while (perm == -1 && curLen >= rootLen) {
+            if (curLen == rootLen && chekedRoot) {
+                return rootPerm;
+            }
+            if (curLen > maxLength) {
+                prefix = prefix.substring(0, curLen -1);
+                curLen = prefix.length();
+                continue;
+            }
+
+            if (curLen < minLength) {
+                break;
+            }
+
+            rulesMap = getRulesMap(prefix, curLen == rootLen);
+            bitInt = rulesMap.get(prefix);
+            if (bitInt != null) {
+                perm = checkUrl(url, prefix, isHttp, isHttps, bitInt);
+            }
+
+            prefix = prefix.substring(0, curLen -1);
+            curLen = prefix.length();
+        }
+        return perm;
+    }
+
+    private int checkUrl(String url, String prefix, boolean isHttp, boolean isHttps, int bitInt) {
+        var perm = -1;
+        Map<String, Integer> rangeMap = POSITION_HTTP_RANGE_MAP ;
+
+        if (isHttp) {
+            if (!check(bitInt, POSITION_HTTP)) {
+                return -1;
+            }
+            rangeMap = POSITION_HTTP_RANGE_MAP;
+        }
+        if (isHttps) {
+            if (!check(bitInt, POSITION_HTTPS)) {
+                return -1;
+            }
+            rangeMap = POSITION_HTTPS_RANGE_MAP;
+        }
+
+        // *
+        if (check(bitInt, rangeMap.get(RANGE_ + "*"))) {
+            perm = check(bitInt, rangeMap.get(PERM_ + "*")) ? 1 : 0;
+        }
+
+        // +
+        if (check(bitInt, rangeMap.get(RANGE_ + "+"))) {
+            if (url.length() > prefix.length()) {
+                perm = check(bitInt, rangeMap.get(PERM_ + "+")) ? 1 : 0;
+            }
+        }
+
+        // =
+        if (check(bitInt, rangeMap.get(RANGE_ + "="))) {
+            if (prefix.equals(url)) {
+                perm = check(bitInt, rangeMap.get(PERM_ + "=")) ? 1 : 0;
+            }
+        }
         return perm;
     }
 

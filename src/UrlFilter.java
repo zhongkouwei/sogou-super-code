@@ -18,7 +18,7 @@ public class UrlFilter {
     private static final BlockingQueue<String> OUT_QUEUE = new LinkedBlockingQueue<>();
 
     private static volatile boolean URL_END = false;
-    private static volatile AtomicInteger DEAL_THREAD_NUM = new AtomicInteger(9);
+    private static volatile AtomicInteger DEAL_THREAD_NUM = new AtomicInteger(6);
 
     private static final AtomicInteger ALLOW_COUNT = new AtomicInteger(0);
     private static final AtomicInteger DISALLOW_COUNT = new AtomicInteger(0);
@@ -26,8 +26,10 @@ public class UrlFilter {
     private static final AtomicLong XOR_ALLOW_VALUE = new AtomicLong(0);
     private static final AtomicLong XOR_DISALLOW_VALUE = new AtomicLong(0);
 
+    private static long startTime;
+
     public static void main(String[] args) throws InterruptedException{
-        long startTime = System.currentTimeMillis();
+        startTime = System.currentTimeMillis();
 
         // ************************ Load Rule **************************************//
 
@@ -61,6 +63,8 @@ public class UrlFilter {
         domainThread.join();
         prefixThread.join();
 
+        long loadTime = System.currentTimeMillis();
+
         // ************************ Load Url ****************************************//
 
         Thread printThread = new Thread(new PrintRunnable());
@@ -84,10 +88,8 @@ public class UrlFilter {
         System.out.format("%08x\n", XOR_ALLOW_VALUE.get());
         System.out.format("%08x\n", XOR_DISALLOW_VALUE.get());
 
-//        System.err.println("domain: " + (domainTime-startTime) / 1000);
-//        System.err.println("prefix: " + (prefixTime-domainTime) / 1000);
-//        System.err.println("deal: " + (dealTime-prefixTime) / 1000);
-        System.err.println("print: " + (System.currentTimeMillis()-dealTime) / 1000);
+        System.err.println("load: " + (loadTime - startTime) / 1000);
+        System.err.println("deal: " + (dealTime - loadTime) / 1000);
         System.err.println("total: " + (System.currentTimeMillis() - startTime) / 1000);
     }
 
@@ -335,6 +337,65 @@ public class UrlFilter {
                 }
             }
         }
+    }
+
+    /**
+     * @author gaoshuo
+     * @date 2019-10-14
+     */
+    static interface Filter {
+
+        void load(String line);
+
+        default void loadFromFile(String filename) throws IOException {
+            RandomAccessFile randomAccessFile = null;
+            FileChannel channel = null;
+            try {
+                randomAccessFile = new RandomAccessFile(filename, "r");
+                channel = randomAccessFile.getChannel();
+                ByteBuffer buffer = ByteBuffer.allocate(1 * 1024 * 1024);
+                byte[] temp = new byte[0];
+                int LF = "\n".getBytes()[0];
+                while (channel.read(buffer) != -1) {
+                    int position = buffer.position();
+                    byte[] rbyte = new byte[position];
+                    buffer.flip();
+                    buffer.get(rbyte);
+                    int startnum = 0;
+                    for (int i = 0; i < rbyte.length; i++) {
+                        if (rbyte[i] == LF) {
+                            byte[] line = new byte[temp.length + i - startnum + 1];
+                            System.arraycopy(temp, 0, line, 0, temp.length);
+                            System.arraycopy(rbyte, startnum, line, temp.length, i - startnum + 1);
+                            startnum = i + 1;
+                            temp = new byte[0];
+                            this.load(new String(line));
+    //                        System.out.println(new String(line));
+                        }
+                    }
+                    if (startnum < rbyte.length) {
+                        byte[] temp2 = new byte[temp.length + rbyte.length - startnum];
+                        System.arraycopy(temp, 0, temp2, 0, temp.length);
+                        System.arraycopy(rbyte, startnum, temp2, temp.length, rbyte.length - startnum);
+                        temp = temp2;
+                    }
+                    buffer.clear();
+                }
+                if (temp.length > 0) {
+                    this.load(new String(temp));
+    //                System.out.println(new String(temp));
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    channel.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
     }
 
 }
