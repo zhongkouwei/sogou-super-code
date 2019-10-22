@@ -33,8 +33,8 @@ class PrefixFilter implements UrlFilter.Filter {
     private static final int POSITION_CONTINUE = 1 << 14;
 
     private static final int MAP_NUM = 100;
-    private Map<String, Integer>[] rootMaps = new Map[MAP_NUM];
-    private Map<String, Integer>[] notRootmaps = new Map[MAP_NUM];
+    private Map<String, Short>[] rootMaps = new Map[MAP_NUM];
+    private Map<String, Short>[] notRootmaps = new Map[MAP_NUM];
 
     private int minLength = Integer.MAX_VALUE;
     private int maxLength = Integer.MIN_VALUE;
@@ -59,10 +59,10 @@ class PrefixFilter implements UrlFilter.Filter {
         }
     }
 
-    private Map<String, Integer> getRulesMap(String url, boolean isRoot) {
+    private Map<String, Short> getRulesMap(String url, boolean isRoot) {
         int hash = url.length();
         int position = Math.abs(hash % MAP_NUM);
-        Map<String, Integer>[] curMaps = isRoot ? rootMaps : notRootmaps;
+        Map<String, Short>[] curMaps = isRoot ? rootMaps : notRootmaps;
         if (curMaps[position] == null) {
             curMaps[position] = new HashMap<>();
         }
@@ -80,12 +80,12 @@ class PrefixFilter implements UrlFilter.Filter {
 
         boolean isRoot = prefix.indexOf("/") == prefix.length() - 1 && prefix.endsWith("/");
 
-        Map<String, Integer> rulesMap = getRulesMap(prefix, isRoot);
-        var bitInt = rulesMap.get(prefix);
-        if (bitInt == null) {
-            bitInt = 0;
+        Map<String, Short> rulesMap = getRulesMap(prefix, isRoot);
+        var value = rulesMap.get(prefix);
+        if (value == null) {
+            value = 0;
         }
-
+        short bitInt = value;
         if (http) {
             bitInt |= POSITION_HTTP;
             bitInt = setBitSet(bitInt, POSITION_HTTP_RANGE_MAP, range, perm);
@@ -103,16 +103,17 @@ class PrefixFilter implements UrlFilter.Filter {
         if (!isRoot) {
             var rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
             rulesMap = getRulesMap(rootUrl, true);
-            bitInt = rulesMap.get(rootUrl);
-            if (bitInt == null) {
-                bitInt = 0;
+            value = rulesMap.get(rootUrl);
+            if (value == null) {
+                value = 0;
             }
+            bitInt = value;
             bitInt |= POSITION_CONTINUE;
             rulesMap.put(rootUrl, bitInt);
         }
     }
 
-    private int setBitSet(int bitInt, Map<String, Integer> rangeMap, char range, boolean perm) {
+    private short setBitSet(short bitInt, Map<String, Integer> rangeMap, char range, boolean perm) {
         if (check(bitInt, rangeMap.get(RANGE_ + range))) {
             // - > +
             if (perm) {
@@ -151,7 +152,7 @@ class PrefixFilter implements UrlFilter.Filter {
         var rootPerm = -1;
         var rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
         int rootLen = rootUrl.length();
-        Map<String, Integer> rulesMap = getRulesMap(rootUrl, true);
+        Map<String, Short> rulesMap = getRulesMap(rootUrl, true);
         var bitInt = rulesMap.get(rootUrl);
         if (bitInt != null) {
             rootPerm = checkUrl(url, rootUrl, isHttp, isHttps, bitInt);

@@ -14,8 +14,8 @@ public class DomainFilter implements UrlFilter.Filter {
     private static final int POSITION_POINT_PERM = 1 << 3;
 
     private static final int MAP_NUM = 100;
-    private Map<String, Integer>[] portMaps = new HashMap[MAP_NUM];
-    private Map<String, Integer>[] noPortmaps = new HashMap[MAP_NUM];
+    private Map<String, Short>[] portMaps = new HashMap[MAP_NUM];
+    private Map<String, Short>[] noPortmaps = new HashMap[MAP_NUM];
 
     @Override
     public void load(String l) {
@@ -30,10 +30,10 @@ public class DomainFilter implements UrlFilter.Filter {
         }
     }
 
-    private Map<String, Integer> getRulesMap(String url, boolean withPort) {
+    private Map<String, Short> getRulesMap(String url, boolean withPort) {
         int hash = url.length();
         int position = Math.abs(hash % MAP_NUM);
-        Map<String, Integer>[] curMaps = withPort ? portMaps : noPortmaps;
+        Map<String, Short>[] curMaps = withPort ? portMaps : noPortmaps;
         if (curMaps[position] == null) {
             curMaps[position] = new HashMap<>();
         }
@@ -41,11 +41,12 @@ public class DomainFilter implements UrlFilter.Filter {
     }
 
     private void addRule(String url, int isPosition, int permPosition, boolean perm) {
-        Map<String, Integer> rulesMap = getRulesMap(url, url.contains(":"));
-        var bitInt = rulesMap.get(url);
-        if (bitInt == null) {
-            bitInt =  0;
+        Map<String, Short> rulesMap = getRulesMap(url, url.contains(":"));
+        Short value = rulesMap.get(url);
+        if (value == null) {
+            value =  0;
         }
+        short bitInt = value;
         bitInt |= isPosition;
         if (!(check(bitInt, permPosition))) {
             if (perm) {
@@ -79,7 +80,7 @@ public class DomainFilter implements UrlFilter.Filter {
         var havaPoint = false;
         var perm = -1;
         while (true) {
-            Map<String, Integer> rulesMap = getRulesMap(url, withPort);
+            Map<String, Short> rulesMap = getRulesMap(url, withPort);
             var bitInt = rulesMap.get(url);
             if (bitInt != null) {
                 if (havaPoint && (check(bitInt, POSITION_IS_POINT))) {
@@ -101,7 +102,7 @@ public class DomainFilter implements UrlFilter.Filter {
         return perm;
     }
 
-    private boolean check(int value, int position){
+    private boolean check(short value, int position){
         return (value & position) == position;
     }
 }
