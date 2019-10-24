@@ -32,7 +32,7 @@ class PrefixFilter implements UrlFilter.Filter {
     private static final int POSITION_HTTPS = 1 << 13;
 
     private static final int MAP_NUM = 100;
-    private HashMap<String, Node> rootMap = new HashMap<>(100000);
+    private HashMap<String, Node>[] rootMaps = new HashMap[MAP_NUM];
 
     @Override
     public void load(String l) {
@@ -54,7 +54,18 @@ class PrefixFilter implements UrlFilter.Filter {
         }
     }
 
+    private HashMap<String, Node> getRootMap(String url) {
+        int hash = url.hashCode();
+        int position = Math.abs(hash % MAP_NUM);
+        if (rootMaps[position] == null) {
+            rootMaps[position] = new HashMap<>();
+        }
+
+        return rootMaps[position];
+    }
+
     private Node getAddNode(String rootUrl) {
+        HashMap<String, Node> rootMap = getRootMap(rootUrl);
         Node rootNode = rootMap.get(rootUrl);
         if (rootNode == null) {
             rootNode = new Node();
@@ -65,6 +76,7 @@ class PrefixFilter implements UrlFilter.Filter {
     }
 
     private Node getNode(String rootUrl) {
+        HashMap<String, Node> rootMap = getRootMap(rootUrl);
         return rootMap.get(rootUrl);
     }
 

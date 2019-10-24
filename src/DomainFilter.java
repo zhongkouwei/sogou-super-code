@@ -14,8 +14,8 @@ public class DomainFilter implements UrlFilter.Filter {
     private static final int POSITION_POINT_PERM = 1 << 3;
 
     private static final int MAP_NUM = 100;
-    private HashMap<String, Node> portMaps = new HashMap<>();
-    private HashMap<String, Node> noPortmaps = new HashMap<>();
+    private HashMap<String, Node>[] portMaps = new HashMap[MAP_NUM];
+    private HashMap<String, Node>[] noPortmaps = new HashMap[MAP_NUM];
 
     @Override
     public void load(String l) {
@@ -30,8 +30,18 @@ public class DomainFilter implements UrlFilter.Filter {
         }
     }
 
+    private HashMap<String, Node> getRuleMap(String url, boolean withPort) {
+        int hash = url.hashCode();
+        int position = Math.abs(hash % MAP_NUM);
+        HashMap<String, Node>[] curMaps = withPort ? portMaps : noPortmaps;
+        if (curMaps[position] == null) {
+            curMaps[position] = new HashMap<>();
+        }
+        return curMaps[position];
+    }
+
     private Node getAddNode(String root, boolean withPort) {
-        HashMap<String, Node> rootMap = withPort ? portMaps : noPortmaps;
+        HashMap<String, Node> rootMap = getRuleMap(root, withPort);
         Node rootNode = rootMap.get(root);
         if (rootNode == null) {
             rootNode = new Node();
@@ -42,7 +52,7 @@ public class DomainFilter implements UrlFilter.Filter {
     }
 
     private Node getNode(String root, boolean withPort) {
-        HashMap<String, Node> rootMap = withPort ? portMaps : noPortmaps;
+        HashMap<String, Node> rootMap = getRuleMap(root, withPort);
         return rootMap.get(root);
     }
 
