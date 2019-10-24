@@ -14,8 +14,8 @@ public class DomainFilter implements UrlFilter.Filter {
     private static final int POSITION_POINT_PERM = 1 << 3;
 
     private static final int MAP_NUM = 100;
-    private Map<String, Short>[] portMaps = new HashMap[MAP_NUM];
-    private Map<String, Short>[] noPortmaps = new HashMap[MAP_NUM];
+    private HashMap<String, Node> portMaps = new HashMap<>();
+    private HashMap<String, Node> noPortmaps = new HashMap<>();
 
     @Override
     public void load(String l) {
@@ -30,30 +30,65 @@ public class DomainFilter implements UrlFilter.Filter {
         }
     }
 
-    private Map<String, Short> getRulesMap(String url, boolean withPort) {
-        int hash = url.length();
-        int position = Math.abs(hash % MAP_NUM);
-        Map<String, Short>[] curMaps = withPort ? portMaps : noPortmaps;
-        if (curMaps[position] == null) {
-            curMaps[position] = new HashMap<>();
+    private Node getAddNode(String root, boolean withPort) {
+        HashMap<String, Node> rootMap = withPort ? portMaps : noPortmaps;
+        Node rootNode = rootMap.get(root);
+        if (rootNode == null) {
+            rootNode = new Node();
+            rootMap.put(root, rootNode);
         }
-        return curMaps[position];
+
+        return rootNode;
+    }
+
+    private Node getNode(String root, boolean withPort) {
+        HashMap<String, Node> rootMap = withPort ? portMaps : noPortmaps;
+        return rootMap.get(root);
     }
 
     private void addRule(String url, int isPosition, int permPosition, boolean perm) {
-        Map<String, Short> rulesMap = getRulesMap(url, url.contains(":"));
-        Short value = rulesMap.get(url);
-        if (value == null) {
-            value =  0;
+        String[] strs = url.split("\\.");
+        Node rootNode = getAddNode(strs[strs.length-1], url.contains(":"));
+        Short value = 0;
+        if (strs.length == 1) {
+            value = rootNode.value;
+            value = setBitInt(value, isPosition, permPosition, perm);
+            rootNode.value = value;
+        } else {
+            rootNode.isEmpty = false;
+            String path = strs.length == 2 ? "" : url.substring(0, url.lastIndexOf(".", url.lastIndexOf(".")-1));
+            CenterNode centerNode = rootNode.children.get(strs[strs.length-2]);
+            if (centerNode == null) {
+                centerNode = new CenterNode();
+                rootNode.children.put(strs[strs.length-2], centerNode);
+            }
+            if (strs.length == 2) {
+                value = centerNode.value;
+            } else {
+                value = centerNode.children.get(path);
+            }
+            if (value == null) {
+                value = 0;
+            }
+            var bitInt = setBitInt(value, isPosition, permPosition, perm);
+            if (strs.length == 2) {
+                centerNode.value = bitInt;
+            } else {
+                centerNode.position |= (1 << path.length());
+                centerNode.isEmpty = false;
+                centerNode.children.put(path, bitInt);
+            }
         }
-        short bitInt = value;
+    }
+
+    private short setBitInt(short bitInt, int isPosition, int permPosition, boolean perm) {
         bitInt |= isPosition;
         if (!(check(bitInt, permPosition))) {
             if (perm) {
                 bitInt |= permPosition;
             }
         }
-        rulesMap.put(url, bitInt);
+        return bitInt;
     }
 
     int match(UrlFilter.Url url) {
@@ -79,30 +114,85 @@ public class DomainFilter implements UrlFilter.Filter {
     private int checkUrl(String url, boolean withPort) {
         var havaPoint = false;
         var perm = -1;
+
+        String[] strs = url.split("\\.");
+        Node rootNode = getNode(strs[strs.length-1], withPort);
+        if (rootNode == null) {
+            return perm;
+        }
+        if (rootNode.isEmpty) {
+            if (rootNode.value != 0) {
+                perm = checkUrl(true, rootNode.value);
+            }
+            return perm;
+        }
+        String path = strs.length == 2 ? "" : url.substring(0, url.lastIndexOf(".", url.lastIndexOf(".")-1));
+        CenterNode node = rootNode.children.get(strs[strs.length-2]);
+        if (node == null) {
+            perm = checkUrl(true, rootNode.value);
+            return perm;
+        }
+        if (node.isEmpty) {
+            if (node.value != 0) {
+                perm = checkUrl(path.length() != 0, node.value);
+            }
+            if (perm == -1) {
+                perm = checkUrl(true, rootNode.value);
+            }
+            return perm;
+        }
         while (true) {
-            Map<String, Short> rulesMap = getRulesMap(url, withPort);
-            var bitInt = rulesMap.get(url);
-            if (bitInt != null) {
-                if (havaPoint && (check(bitInt, POSITION_IS_POINT))) {
-                    perm = check(bitInt, POSITION_POINT_PERM) ? 1 : 0;
-                    break;
+            if ("".equals(path)) {
+                if (node.value != 0) {
+                    perm = checkUrl(havaPoint, node.value);
                 }
-                if (check(bitInt, POSITION_IS_URL)) {
-                    perm = check(bitInt, POSITION_URL_PERM) ? 1 : 0;
-                    break;
+                break;
+            }
+            var bitInt = node.children.get(path);
+            if (bitInt != null) {
+                perm = checkUrl(havaPoint, bitInt);
+                if (perm != -1) {
+                    return perm;
                 }
             }
 
-            if (!url.contains(".")) {
-                break;
-            }
-            url = url.substring(url.indexOf(".") + 1);
+            path = path.contains(".") ? path.substring(path.indexOf(".") + 1) : "";
             havaPoint = true;
+        }
+        if (perm == -1) {
+            perm = checkUrl(true, rootNode.value);
+        }
+
+        return perm;
+    }
+
+    private int checkUrl(boolean havaPoint, short bitInt) {
+        var perm = -1;
+        if (havaPoint && (check(bitInt, POSITION_IS_POINT))) {
+            perm = check(bitInt, POSITION_POINT_PERM) ? 1 : 0;
+        }
+        if (perm == -1) {
+            if (check(bitInt, POSITION_IS_URL)) {
+                perm = check(bitInt, POSITION_URL_PERM) ? 1 : 0;
+            }
         }
         return perm;
     }
 
     private boolean check(short value, int position){
         return (value & position) == position;
+    }
+
+    class Node {
+        HashMap<String, CenterNode> children = new HashMap<>();
+        short value = 0;
+        boolean isEmpty = true;
+    }
+
+    class CenterNode {
+        HashMap<String, Short> children = new HashMap<>();
+        short value = 0;
+        boolean isEmpty = true;
+        int position = 0;
     }
 }

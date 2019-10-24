@@ -30,14 +30,9 @@ class PrefixFilter implements UrlFilter.Filter {
 
     private static final int POSITION_HTTP = 1 << 12;
     private static final int POSITION_HTTPS = 1 << 13;
-    private static final int POSITION_CONTINUE = 1 << 14;
 
     private static final int MAP_NUM = 100;
-    private Map<String, Short>[] rootMaps = new Map[MAP_NUM];
-    private Map<String, Short>[] notRootmaps = new Map[MAP_NUM];
-
-    private int minLength = Integer.MAX_VALUE;
-    private int maxLength = Integer.MIN_VALUE;
+    private HashMap<String, Node> rootMap = new HashMap<>(100000);
 
     @Override
     public void load(String l) {
@@ -59,31 +54,35 @@ class PrefixFilter implements UrlFilter.Filter {
         }
     }
 
-    private Map<String, Short> getRulesMap(String url, boolean isRoot) {
-        int hash = url.length();
-        int position = Math.abs(hash % MAP_NUM);
-        Map<String, Short>[] curMaps = isRoot ? rootMaps : notRootmaps;
-        if (curMaps[position] == null) {
-            curMaps[position] = new HashMap<>();
+    private Node getAddNode(String rootUrl) {
+        Node rootNode = rootMap.get(rootUrl);
+        if (rootNode == null) {
+            rootNode = new Node();
+            rootMap.put(rootUrl, rootNode);
         }
 
-        return curMaps[position];
+        return rootNode;
+    }
+
+    private Node getNode(String rootUrl) {
+        return rootMap.get(rootUrl);
     }
 
     private void addRule(String prefix, char range, boolean perm, boolean http, boolean https) {
-        if (prefix.length() > maxLength) {
-            maxLength = prefix.length();
-        }
-        if (prefix.length() < minLength) {
-            minLength = prefix.length();
-        }
+        String rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
+        String path = prefix.substring(prefix.indexOf("/") + 1);
+        Node node = getAddNode(rootUrl);
 
         boolean isRoot = prefix.indexOf("/") == prefix.length() - 1 && prefix.endsWith("/");
 
-        Map<String, Short> rulesMap = getRulesMap(prefix, isRoot);
-        var value = rulesMap.get(prefix);
-        if (value == null) {
-            value = 0;
+        Short value = 0;
+        if (isRoot) {
+            value = node.value;
+        } else  {
+            value = node.children.get(path);
+            if (value == null) {
+                value = 0;
+            }
         }
         short bitInt = value;
         if (http) {
@@ -95,21 +94,15 @@ class PrefixFilter implements UrlFilter.Filter {
             bitInt = setBitSet(bitInt, POSITION_HTTPS_RANGE_MAP, range, perm);
         }
 
-        rulesMap.put(prefix, bitInt);
-
         /*
-            when is not root, mark rootMap
+            if is root, mark the value and isEmpty. else put children
          */
-        if (!isRoot) {
-            var rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
-            rulesMap = getRulesMap(rootUrl, true);
-            value = rulesMap.get(rootUrl);
-            if (value == null) {
-                value = 0;
-            }
-            bitInt = value;
-            bitInt |= POSITION_CONTINUE;
-            rulesMap.put(rootUrl, bitInt);
+        if (isRoot) {
+            node.value = bitInt;
+        } else {
+            node.position |= (1 << path.length());
+            node.isEmpty = false;
+            node.children.put(path, bitInt);
         }
     }
 
@@ -143,51 +136,43 @@ class PrefixFilter implements UrlFilter.Filter {
             isHttp = true;
         }
 
-        var prefix = url;
-
-//        /*
-//            first check rootUrl
-//         */
-        var chekedRoot = false;
-        var rootPerm = -1;
-        var rootUrl = prefix.substring(0, prefix.indexOf("/") + 1);
-        int rootLen = rootUrl.length();
-        Map<String, Short> rulesMap = getRulesMap(rootUrl, true);
-        var bitInt = rulesMap.get(rootUrl);
-        if (bitInt != null) {
-            rootPerm = checkUrl(url, rootUrl, isHttp, isHttps, bitInt);
-            chekedRoot = true;
-            if (!check(bitInt, POSITION_CONTINUE)) {
-                return rootPerm;
-            }
+        /*
+            first check rootUrl, if no path
+         */
+        var rootUrl = url.substring(0, url.indexOf("/") + 1);
+        var path = url.substring(url.indexOf("/") + 1);
+        Node node = getNode(rootUrl);
+        if (node == null) {
+            return perm;
         }
+        if (node.isEmpty) {
+            return checkUrl(url, rootUrl, isHttp, isHttps, node.value);
+        }
+
+        var tempPath = path;
 
         /*
             then check path
          */
-        int curLen = prefix.length();
-        while (perm == -1 && curLen >= rootLen) {
-            if (curLen == rootLen && chekedRoot) {
-                return rootPerm;
-            }
-            if (curLen > maxLength) {
-                prefix = prefix.substring(0, curLen -1);
-                curLen = prefix.length();
-                continue;
-            }
-
-            if (curLen < minLength) {
-                break;
+        while (perm == -1) {
+            if (tempPath.length() == 0) {
+                if (node.value != 0) {
+                    perm =  checkUrl(path, tempPath, isHttp, isHttps, node.value);
+                }
+                return perm;
+            } else {
+                if (!check(node.position, 1 << tempPath.length())) {
+                    tempPath = tempPath.substring(0, tempPath.length() -1);
+                    continue;
+                }
             }
 
-            rulesMap = getRulesMap(prefix, curLen == rootLen);
-            bitInt = rulesMap.get(prefix);
+            var bitInt = node.children.get(tempPath);
             if (bitInt != null) {
-                perm = checkUrl(url, prefix, isHttp, isHttps, bitInt);
+                perm = checkUrl(path, tempPath, isHttp, isHttps, bitInt);
             }
 
-            prefix = prefix.substring(0, curLen -1);
-            curLen = prefix.length();
+            tempPath = tempPath.substring(0, tempPath.length() -1);
         }
         return perm;
     }
@@ -232,5 +217,12 @@ class PrefixFilter implements UrlFilter.Filter {
 
     private boolean check(int value, int position){
         return (value & position) == position;
+    }
+
+    class Node {
+        HashMap<String, Short> children = new HashMap<>();
+        short value = 0;
+        boolean isEmpty = true;
+        int position = 0;
     }
 }
